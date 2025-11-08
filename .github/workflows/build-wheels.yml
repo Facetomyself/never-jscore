@@ -10,17 +10,20 @@ on:
   workflow_dispatch:
 
 env:
-  V8_FROM_SOURCE: 0
+  V8_FROM_SOURCE: 1  # 关键：必须从源码编译 V8 以修复 TLS 问题
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   SCCACHE_GHA_ENABLED: "true"
   RUSTC_WRAPPER: "sccache"
+  # V8 TLS 模型修复：使用 global-dynamic 而非 initial-exec
+  GN_ARGS: 'extra_cflags=["-DV8_TLS_MODEL=\\"global-dynamic\\"","-fPIC"] is_clang=true'
 
 jobs:
-  # Linux 构建
+  # Linux 构建 - 从源码编译 V8
   build_wheels_linux:
     name: Build Linux wheels
     runs-on: ubuntu-latest
+    timeout-minutes: 180  # V8 从源码编译需要很长时间
     strategy:
       fail-fast: false
       matrix:
@@ -45,7 +48,24 @@ jobs:
             cmake \
             build-essential \
             pkg-config \
-            libssl-dev
+            libssl-dev \
+            python3 \
+            git \
+            curl
+
+      - name: Install gn and ninja (V8 build tools)
+        run: |
+          # 安装 ninja
+          sudo apt-get install -y ninja-build
+
+          # 下载预编译的 gn
+          cd /tmp
+          curl -L https://chrome-infra-packages.appspot.com/dl/gn/gn/linux-amd64/+/latest -o gn.zip
+          unzip -q gn.zip
+          sudo mv gn /usr/local/bin/
+          sudo chmod +x /usr/local/bin/gn
+          gn --version
+          ninja --version
 
       - name: Find and set libclang path
         run: |
@@ -53,50 +73,63 @@ jobs:
           echo "LIBCLANG_PATH=$LIBCLANG_PATH" >> $GITHUB_ENV
           echo "Found libclang at: $LIBCLANG_PATH"
 
-      - name: Setup sccache
+      - name: Setup sccache (for Rust, not V8)
         uses: mozilla-actions/sccache-action@v0.0.4
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: linux-${{ matrix.target }}
-          cache-on-failure: true
 
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
           args: --release --out dist --find-interpreter
-          sccache: 'true'
           manylinux: 2_28
           before-script-linux: |
-            # 检测包管理器并安装依赖
+            # 在 manylinux 容器中安装必要工具
             if command -v yum &> /dev/null; then
-              echo "Using yum (manylinux container)"
-              yum install -y clang llvm-devel cmake glibc-devel glibc-headers kernel-headers gcc-c++
+              echo "=== Installing build dependencies in manylinux container ==="
+              yum install -y clang llvm-devel cmake glibc-devel glibc-headers kernel-headers gcc-c++ python3 git curl unzip
 
-              # 设置 bindgen 的 clang 参数
+              # 安装 ninja
+              cd /tmp
+              curl -L https://github.com/ninja-build/ninja/releases/download/v1.11.1/ninja-linux.zip -o ninja.zip
+              unzip -q ninja.zip
+              mv ninja /usr/local/bin/
+              chmod +x /usr/local/bin/ninja
+
+              # 安装 gn
+              curl -L https://chrome-infra-packages.appspot.com/dl/gn/gn/linux-amd64/+/latest -o gn.zip
+              unzip -q gn.zip
+              mv gn /usr/local/bin/
+              chmod +x /usr/local/bin/gn
+
+              cd /
+
+              echo "=== Tool versions ==="
+              gn --version
+              ninja --version
+              clang --version
+              python3 --version
+
+              # 设置 bindgen
               ARCH=$(uname -m)
               export BINDGEN_EXTRA_CLANG_ARGS="-I/usr/include -I/usr/include/$ARCH-linux-gnu"
-              echo "BINDGEN_EXTRA_CLANG_ARGS=$BINDGEN_EXTRA_CLANG_ARGS"
+              export LIBCLANG_PATH=$(find /usr/lib* -name "libclang.so*" 2>/dev/null | head -1 | xargs dirname 2>/dev/null || echo "/usr/lib64")
 
-              # 查找并设置 libclang
-              export LIBCLANG_PATH="${LIBCLANG_PATH:-$(find /usr/lib* -name "libclang.so*" 2>/dev/null | head -1 | xargs dirname 2>/dev/null || echo "/usr/lib64")}"
-              echo "Using LIBCLANG_PATH=$LIBCLANG_PATH"
-              ls -la $LIBCLANG_PATH/libclang* 2>/dev/null || echo "libclang not found"
-            else
-              echo "Not in manylinux container"
+              echo "BINDGEN_EXTRA_CLANG_ARGS=$BINDGEN_EXTRA_CLANG_ARGS"
+              echo "LIBCLANG_PATH=$LIBCLANG_PATH"
             fi
 
-            # 设置 V8 相关环境变量
-            export V8_FROM_SOURCE=0
+            # 设置 V8 编译参数
+            export V8_FROM_SOURCE=1
+            export GN_ARGS='extra_cflags=["-DV8_TLS_MODEL=\\"global-dynamic\\"","-fPIC"] is_clang=true'
             export CARGO_NET_GIT_FETCH_WITH_CLI=true
 
-            # 验证工具
-            clang --version 2>/dev/null || echo "clang not in PATH"
+            echo "=== V8 Build Configuration ==="
+            echo "V8_FROM_SOURCE=$V8_FROM_SOURCE"
+            echo "GN_ARGS=$GN_ARGS"
         env:
-          V8_FROM_SOURCE: "0"
-          RUSTFLAGS: "-C relocation-model=pic -C link-arg=-Wl,-z,notext"
+          V8_FROM_SOURCE: "1"
+          GN_ARGS: 'extra_cflags=["-DV8_TLS_MODEL=\\"global-dynamic\\"","-fPIC"] is_clang=true'
+          RUSTFLAGS: "-C relocation-model=pic"
 
       - name: List built wheels
         run: ls -lh dist/
