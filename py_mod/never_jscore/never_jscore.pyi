@@ -141,7 +141,7 @@ class Context:
     def call(
         self,
         name: str,
-        args: List[Any],
+        args: List[Any] = [],
         auto_await: Optional[bool] = None
     ) -> Any:
         """
