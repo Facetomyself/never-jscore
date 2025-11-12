@@ -383,12 +383,8 @@ with never_jscore.Context() as ctx:
 
 **A**:
 - **相似**：都使用 V8 引擎，性能相当
-- **优势**：支持 Promise/async、完整 Web API、Hook 拦截
+- **优势**：支持 Promise/async、完整 Web API、Hook 拦截等更多其他功能
 - **劣势**：PyMiniRacer 是 V8 的直接绑定，理论上开销更小
-
-### Q: 多线程安全吗？
-
-**A**: 安全。每个线程创建独立的 Context，使用 ThreadLocal 复用。详见 `docs/MULTITHREADING.md`。
 
 ### Q: with 语句为什么在循环中会崩溃？
 
