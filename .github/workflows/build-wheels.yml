@@ -81,6 +81,11 @@ jobs:
         target: [ x64 ]
 
     steps:
+      # 启用 Windows 长路径支持（解决 deno submodule 路径过长问题）
+      - name: Enable long paths
+        run: |
+          git config --system core.longpaths true
+
       - uses: actions/checkout@v4
 
       - name: Set up Python
